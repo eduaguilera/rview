@@ -1,0 +1,78 @@
+{
+  "name": "rview",
+  "displayName": "Rview",
+  "description": "RStudio-like features for Positron/VS Code: data viewer with filters & sorting, code section folding, and Ctrl+Click to explore tibbles",
+  "version": "1.0.0",
+  "publisher": "eduaguilera",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/eduaguilera/rview"
+  },
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "extensionDependencies": [],
+  "activationEvents": [
+    "onLanguage:r",
+    "onLanguage:rmd",
+    "onLanguage:quarto"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "configurationDefaults": {
+      "[r]": {
+        "editor.foldingStrategy": "auto"
+      },
+      "[rmd]": {
+        "editor.foldingStrategy": "auto"
+      },
+      "[quarto]": {
+        "editor.foldingStrategy": "auto"
+      }
+    },
+    "commands": [
+      {
+        "command": "rview.openInDataExplorer",
+        "title": "Rview: Open in Data Explorer"
+      },
+      {
+        "command": "rview.openSimpleViewer",
+        "title": "Rview: Open in Simple Data Viewer"
+      },
+      {
+        "command": "rview.testActivation",
+        "title": "Rview: Test Activation"
+      }
+    ],
+    "keybindings": [
+      {
+        "command": "rview.openInDataExplorer",
+        "key": "ctrl+shift+d",
+        "when": "editorTextFocus && editorLangId == r"
+      },
+      {
+        "command": "rview.openSimpleViewer",
+        "key": "ctrl+shift+v",
+        "when": "editorTextFocus && editorLangId == r"
+      }
+    ]
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "pretest": "npm run compile && npm run lint",
+    "lint": "eslint src --ext ts"
+  },
+  "devDependencies": {
+    "@types/node": "^20.x",
+    "@types/vscode": "^1.85.0",
+    "@typescript-eslint/eslint-plugin": "^6.x",
+    "@typescript-eslint/parser": "^6.x",
+    "eslint": "^8.x",
+    "typescript": "^5.x"
+  }
+}
