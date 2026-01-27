@@ -195,8 +195,7 @@ class SimpleDataViewerPanel {
         const tempFile = path.join(SimpleDataViewerPanel._tempDir, `data_${Date.now()}.json`);
         const tempFileEscaped = tempFile.replace(/\\/g, '/');
 
-        // R code to write data to temp file (with progressive loading)
-        const tempFileFullEscaped = tempFileEscaped.replace('.json', '_full.json');
+        // R code to write data to temp file
         const rCode = `
 tryCatch({
     if (!requireNamespace("jsonlite", quietly = TRUE)) {
@@ -206,38 +205,17 @@ tryCatch({
     .tmp_nrow <- nrow(.tmp_data)
     .tmp_ncol <- ncol(.tmp_data)
     .tmp_cols <- colnames(.tmp_data)
-    
-    # Export first chunk (first 1000 rows) for immediate display
-    .tmp_preview_rows <- min(1000, .tmp_nrow)
-    .tmp_preview <- lapply(1:.tmp_preview_rows, function(i) {
+    .tmp_rows <- lapply(1:nrow(.tmp_data), function(i) {
         as.character(unlist(.tmp_data[i, ]))
     })
-    .tmp_preview_json <- jsonlite::toJSON(list(
+    .tmp_json <- jsonlite::toJSON(list(
         columns = .tmp_cols,
-        rows = .tmp_preview,
+        rows = .tmp_rows,
         nrow = .tmp_nrow,
-        ncol = .tmp_ncol,
-        isPreview = .tmp_nrow > 1000
+        ncol = .tmp_ncol
     ), auto_unbox = TRUE)
-    writeLines(.tmp_preview_json, "${tempFileEscaped}")
-    
-    # If more than 1000 rows, export full data to separate file
-    if (.tmp_nrow > 1000) {
-        .tmp_all_rows <- lapply(1:.tmp_nrow, function(i) {
-            as.character(unlist(.tmp_data[i, ]))
-        })
-        .tmp_full_json <- jsonlite::toJSON(list(
-            columns = .tmp_cols,
-            rows = .tmp_all_rows,
-            nrow = .tmp_nrow,
-            ncol = .tmp_ncol,
-            isPreview = FALSE
-        ), auto_unbox = TRUE)
-        writeLines(.tmp_full_json, "${tempFileFullEscaped}")
-        rm(.tmp_all_rows, .tmp_full_json)
-    }
-    
-    rm(.tmp_data, .tmp_nrow, .tmp_ncol, .tmp_cols, .tmp_preview, .tmp_preview_json, .tmp_preview_rows)
+    writeLines(.tmp_json, "${tempFileEscaped}")
+    rm(.tmp_data, .tmp_nrow, .tmp_ncol, .tmp_cols, .tmp_rows, .tmp_json)
     message("Data exported successfully")
 }, error = function(e) {
     writeLines(paste0('{"error":"', gsub('"', '\\\\"', e$message), '"}'), "${tempFileEscaped}")
@@ -303,43 +281,9 @@ tryCatch({
             this._panel.webview.html = this._getErrorHtml(variableName, data.error);
         } else if (data && data.columns) {
             this._panel.webview.html = this._getDataHtml(variableName, data);
-            
-            // If this is a preview, load full data in background
-            if (data.isPreview) {
-                this._loadFullDataInBackground(tempFile.replace('.json', '_full.json'));
-            }
         } else {
             // Timeout or failed
             this._panel.webview.html = this._getManualHtml(variableName);
-        }
-    }
-
-    private async _loadFullDataInBackground(fullDataFile: string) {
-        // Poll for full data file (give it up to 30 seconds for large datasets)
-        const maxWait = 30000;
-        const pollInterval = 500;
-        let waited = 0;
-
-        while (waited < maxWait) {
-            await new Promise(resolve => setTimeout(resolve, pollInterval));
-            waited += pollInterval;
-
-            if (fs.existsSync(fullDataFile)) {
-                try {
-                    const content = fs.readFileSync(fullDataFile, 'utf-8');
-                    const fullData = JSON.parse(content);
-                    fs.unlinkSync(fullDataFile); // Clean up
-                    
-                    // Send full data to webview
-                    this._panel.webview.postMessage({
-                        command: 'updateFullData',
-                        data: fullData
-                    });
-                    break;
-                } catch (e) {
-                    console.log('Error reading full data file:', e);
-                }
-            }
         }
     }
 
@@ -505,7 +449,7 @@ function renderTable(data) {
 </body></html>`;
     }
 
-    private _getDataHtml(variableName: string, data: { columns: string[], rows: any[][], nrow: number, ncol: number, isPreview?: boolean }): string {
+    private _getDataHtml(variableName: string, data: { columns: string[], rows: any[][], nrow: number, ncol: number }): string {
         return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -640,24 +584,21 @@ function renderTable(data) {
             </tbody>
         </table>
     </div>
-    <div class="status-bar" id="statusBar">Showing ${data.rows.length} of ${data.nrow} rows${data.isPreview ? ' (loading full data...)' : ''}</div>
+    <div class="status-bar" id="statusBar">Showing ${data.rows.length} of ${data.nrow} rows</div>
 
     <script>
         let originalRows = ${JSON.stringify(data.rows)};
         const columns = ${JSON.stringify(data.columns)};
         let displayRows = originalRows.map((row, i) => ({ data: row, originalIndex: i }));
-        let isLoadingFull = ${data.isPreview ? 'true' : 'false'};
         
-        // Listen for full data updates
-        window.addEventListener('message', event => {
-            const message = event.data;
-            if (message.command === 'updateFullData') {
-                originalRows = message.data.rows;
-                isLoadingFull = false;
-                applyFiltersAndSort();
-                document.getElementById('statusBar').textContent = 'Showing ' + displayRows.length + ' of ' + originalRows.length + ' rows';
-            }
-        });
+        // Virtual scrolling configuration
+        const ROWS_PER_BATCH = 100; // Render 100 rows at a time
+        let scrollTop = 0;
+        let visibleStartIndex = 0;
+        let visibleEndIndex = ROWS_PER_BATCH;
+        
+        // Debounce timer for filter inputs
+        let filterDebounceTimer = null;
         let sortStack = []; // Array of { col, dir } for multi-level sorting
         const vscode = acquireVsCodeApi();
 
@@ -682,9 +623,18 @@ function renderTable(data) {
             vscode.postMessage({ command: 'refresh' });
         });
 
-        // Filter inputs
+        // Filter inputs with debouncing
         document.querySelectorAll('.filter-input').forEach(input => {
-            input.addEventListener('input', applyFiltersAndSort);
+            input.addEventListener('input', () => {
+                // Clear existing timer
+                if (filterDebounceTimer) {
+                    clearTimeout(filterDebounceTimer);
+                }
+                // Set new timer - wait 300ms after user stops typing
+                filterDebounceTimer = setTimeout(() => {
+                    applyFiltersAndSort();
+                }, 300);
+            });
         });
 
         // Sorting - click on header
@@ -752,6 +702,10 @@ function renderTable(data) {
         }
 
         function applyFiltersAndSort() {
+            // Reset visible range for virtual scrolling
+            visibleStartIndex = 0;
+            visibleEndIndex = ROWS_PER_BATCH;
+            
             // Get filters
             const filters = {};
             document.querySelectorAll('.filter-input').forEach(input => {
@@ -760,14 +714,32 @@ function renderTable(data) {
                 if (value) filters[col] = value;
             });
 
-            // Filter rows
-            let filtered = originalRows.map((row, i) => ({ data: row, originalIndex: i }));
+            // Filter rows - optimize by mapping once
+            const filterCols = Object.keys(filters);
+            let filtered;
             
-            for (const [col, filter] of Object.entries(filters)) {
-                filtered = filtered.filter(row => {
-                    const cellValue = (row.data[col] || '').toLowerCase();
-                    return cellValue.includes(filter);
-                });
+            if (filterCols.length === 0) {
+                // No filters - just map with index
+                filtered = originalRows.map((row, i) => ({ data: row, originalIndex: i }));
+            } else {
+                // Apply filters
+                filtered = [];
+                for (let i = 0; i < originalRows.length; i++) {
+                    const row = originalRows[i];
+                    let match = true;
+                    
+                    for (const col of filterCols) {
+                        const cellValue = (row[col] || '').toLowerCase();
+                        if (!cellValue.includes(filters[col])) {
+                            match = false;
+                            break;
+                        }
+                    }
+                    
+                    if (match) {
+                        filtered.push({ data: row, originalIndex: i });
+                    }
+                }
             }
 
             // Sort rows (multi-level)
@@ -802,19 +774,89 @@ function renderTable(data) {
 
         function renderTableBody() {
             const tbody = document.getElementById('tableBody');
-            let html = '';
             
-            displayRows.forEach((row, i) => {
-                html += '<tr data-original="' + row.originalIndex + '">';
-                html += '<td class="row-number">' + (row.originalIndex + 1) + '</td>';
-                row.data.forEach(cell => {
-                    html += '<td title="' + escapeHtml(String(cell || '')) + '">' + escapeHtml(String(cell || '')) + '</td>';
-                });
-                html += '</tr>';
-            });
+            // Virtual scrolling - only render visible rows
+            const totalRows = displayRows.length;
+            const endIndex = Math.min(visibleEndIndex, totalRows);
             
-            tbody.innerHTML = html;
+            // Build HTML efficiently with array join
+            const rowsHtml = [];
+            
+            for (let i = visibleStartIndex; i < endIndex; i++) {
+                const row = displayRows[i];
+                const cells = ['<tr data-original="' + row.originalIndex + '">'];
+                cells.push('<td class="row-number">' + (row.originalIndex + 1) + '</td>');
+                
+                for (let j = 0; j < row.data.length; j++) {
+                    const cell = row.data[j];
+                    const cellText = escapeHtml(String(cell || ''));
+                    cells.push('<td title="' + cellText + '">' + cellText + '</td>');
+                }
+                cells.push('</tr>');
+                rowsHtml.push(cells.join(''));
+            }
+            
+            tbody.innerHTML = rowsHtml.join('');
             document.getElementById('statusBar').textContent = 'Showing ' + displayRows.length + ' of ' + originalRows.length + ' rows';
+            
+            // If we have more rows to display, set up infinite scroll
+            if (displayRows.length > ROWS_PER_BATCH) {
+                setupInfiniteScroll();
+            }
+        }
+        
+        function setupInfiniteScroll() {
+            const tableContainer = document.querySelector('.table-container');
+            let scrollTimeout;
+            
+            // Remove existing listener if any
+            const oldListener = tableContainer.onscroll;
+            
+            tableContainer.onscroll = function() {
+                // Debounce scroll events
+                if (scrollTimeout) {
+                    clearTimeout(scrollTimeout);
+                }
+                
+                scrollTimeout = setTimeout(() => {
+                    const scrollHeight = tableContainer.scrollHeight;
+                    const scrollTop = tableContainer.scrollTop;
+                    const clientHeight = tableContainer.clientHeight;
+                    
+                    // Load more rows when scrolled near bottom
+                    if (scrollTop + clientHeight >= scrollHeight - 200) {
+                        if (visibleEndIndex < displayRows.length) {
+                            visibleEndIndex = Math.min(visibleEndIndex + ROWS_PER_BATCH, displayRows.length);
+                            renderMoreRows();
+                        }
+                    }
+                }, 100);
+            };
+        }
+        
+        function renderMoreRows() {
+            const tbody = document.getElementById('tableBody');
+            const currentEnd = tbody.children.length + visibleStartIndex;
+            const newEnd = Math.min(visibleEndIndex, displayRows.length);
+            
+            // Append new rows efficiently
+            const fragment = document.createDocumentFragment();
+            
+            for (let i = currentEnd; i < newEnd; i++) {
+                const row = displayRows[i];
+                const tr = document.createElement('tr');
+                tr.dataset.original = row.originalIndex;
+                
+                let html = '<td class="row-number">' + (row.originalIndex + 1) + '</td>';
+                row.data.forEach(cell => {
+                    const cellText = escapeHtml(String(cell || ''));
+                    html += '<td title="' + cellText + '">' + cellText + '</td>';
+                });
+                tr.innerHTML = html;
+                fragment.appendChild(tr);
+            }
+            
+            tbody.appendChild(fragment);
         }
 
         function escapeHtml(text) {
