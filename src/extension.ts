@@ -204,10 +204,9 @@ tryCatch({
     .tmp_data <- ${variableName}
     .tmp_nrow <- nrow(.tmp_data)
     .tmp_ncol <- ncol(.tmp_data)
-    .tmp_preview <- head(.tmp_data, 1000)
-    .tmp_cols <- colnames(.tmp_preview)
-    .tmp_rows <- lapply(1:nrow(.tmp_preview), function(i) {
-        as.character(unlist(.tmp_preview[i, ]))
+    .tmp_cols <- colnames(.tmp_data)
+    .tmp_rows <- lapply(1:nrow(.tmp_data), function(i) {
+        as.character(unlist(.tmp_data[i, ]))
     })
     .tmp_json <- jsonlite::toJSON(list(
         columns = .tmp_cols,
@@ -216,7 +215,7 @@ tryCatch({
         ncol = .tmp_ncol
     ), auto_unbox = TRUE)
     writeLines(.tmp_json, "${tempFileEscaped}")
-    rm(.tmp_data, .tmp_nrow, .tmp_ncol, .tmp_preview, .tmp_cols, .tmp_rows, .tmp_json)
+    rm(.tmp_data, .tmp_nrow, .tmp_ncol, .tmp_cols, .tmp_rows, .tmp_json)
     message("Data exported successfully")
 }, error = function(e) {
     writeLines(paste0('{"error":"', gsub('"', '\\\\"', e$message), '"}'), "${tempFileEscaped}")
@@ -352,10 +351,9 @@ button:hover { background: var(--vscode-button-hoverBackground); }
     private _getManualHtml(variableName: string): string {
         const rCode = `.view_data <- function(df) {
   if (!requireNamespace("jsonlite", quietly = TRUE)) install.packages("jsonlite")
-  preview <- head(df, 1000)
   json <- jsonlite::toJSON(list(
-    columns = colnames(preview),
-    rows = lapply(1:nrow(preview), function(i) as.character(unlist(preview[i, ]))),
+    columns = colnames(df),
+    rows = lapply(1:nrow(df), function(i) as.character(unlist(df[i, ]))),
     nrow = nrow(df), ncol = ncol(df)
   ), auto_unbox = TRUE)
   if (Sys.info()["sysname"] == "Windows") writeClipboard(as.character(json))
@@ -562,7 +560,7 @@ function renderTable(data) {
 <body>
     <div class="header">
         <h2>📊 ${variableName}</h2>
-        <span class="info">${data.nrow} rows × ${data.ncol} columns${data.nrow > 1000 ? ' (showing first 1000)' : ''}</span>
+        <span class="info">${data.nrow} rows × ${data.ncol} columns</span>
     </div>
     <div class="toolbar">
         <button id="clearFiltersBtn">🔄 Clear Filters</button>
