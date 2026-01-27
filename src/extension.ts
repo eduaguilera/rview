@@ -192,33 +192,34 @@ class SimpleDataViewerPanel {
         this._panel.webview.html = this._getLoadingHtml(variableName);
 
         // Create temp file path for JSON output
-        const tempFile = path.join(SimpleDataViewerPanel._tempDir, `data_${Date.now()}.json`);
+        const tempFile = path.join(SimpleDataViewerPanel._tempDir, `data_${Date.now()}.csv`);
         const tempFileEscaped = tempFile.replace(/\\/g, '/');
 
-        // R code to write data to temp file
+        // R code to write data to temp file using FAST CSV export
         const rCode = `
 tryCatch({
-    if (!requireNamespace("jsonlite", quietly = TRUE)) {
-        install.packages("jsonlite", repos = "https://cloud.r-project.org")
+    # Use data.table for blazing fast export (install if needed)
+    if (!requireNamespace("data.table", quietly = TRUE)) {
+        install.packages("data.table", repos = "https://cloud.r-project.org")
     }
-    .tmp_data <- ${variableName}
+    
+    .tmp_data <- as.data.frame(${variableName})
     .tmp_nrow <- nrow(.tmp_data)
     .tmp_ncol <- ncol(.tmp_data)
     .tmp_cols <- colnames(.tmp_data)
-    .tmp_rows <- lapply(1:nrow(.tmp_data), function(i) {
-        as.character(unlist(.tmp_data[i, ]))
-    })
-    .tmp_json <- jsonlite::toJSON(list(
-        columns = .tmp_cols,
-        rows = .tmp_rows,
-        nrow = .tmp_nrow,
-        ncol = .tmp_ncol
-    ), auto_unbox = TRUE)
-    writeLines(.tmp_json, "${tempFileEscaped}")
-    rm(.tmp_data, .tmp_nrow, .tmp_ncol, .tmp_cols, .tmp_rows, .tmp_json)
+    
+    # Convert all columns to character for consistent display
+    .tmp_data[] <- lapply(.tmp_data, as.character)
+    
+    # Write metadata as first line, then CSV data (data.table::fwrite is ~100x faster than lapply)
+    .tmp_meta <- paste0("__META__,", .tmp_nrow, ",", .tmp_ncol)
+    writeLines(.tmp_meta, "${tempFileEscaped}")
+    data.table::fwrite(.tmp_data, "${tempFileEscaped}", append = TRUE, quote = TRUE)
+    
+    rm(.tmp_data, .tmp_nrow, .tmp_ncol, .tmp_cols, .tmp_meta)
     message("Data exported successfully")
 }, error = function(e) {
-    writeLines(paste0('{"error":"', gsub('"', '\\\\"', e$message), '"}'), "${tempFileEscaped}")
+    writeLines(paste0('__ERROR__,', gsub(',', ';', e$message)), "${tempFileEscaped}")
 })
 `;
 
@@ -255,9 +256,9 @@ tryCatch({
             return;
         }
 
-        // Wait for file to be created (poll for up to 10 seconds)
+        // Wait for CSV file to be created (poll for up to 60 seconds for large datasets)
         let data: any = null;
-        const maxWait = 10000;
+        const maxWait = 60000;
         const pollInterval = 200;
         let waited = 0;
 
@@ -268,7 +269,32 @@ tryCatch({
             if (fs.existsSync(tempFile)) {
                 try {
                     const content = fs.readFileSync(tempFile, 'utf-8');
-                    data = JSON.parse(content);
+                    const lines = content.split('\n');
+                    
+                    // Check for error
+                    if (lines[0].startsWith('__ERROR__')) {
+                        const errorMsg = lines[0].split(',').slice(1).join(',');
+                        data = { error: errorMsg };
+                    } else if (lines[0].startsWith('__META__')) {
+                        // Parse metadata: __META__,nrow,ncol
+                        const metaParts = lines[0].split(',');
+                        const nrow = parseInt(metaParts[1]);
+                        const ncol = parseInt(metaParts[2]);
+                        
+                        // Parse CSV header (column names) - line 1
+                        const columns = this._parseCSVLine(lines[1]);
+                        
+                        // Parse CSV data rows - lines 2+
+                        const rows: string[][] = [];
+                        for (let i = 2; i < lines.length; i++) {
+                            if (lines[i].trim()) {
+                                rows.push(this._parseCSVLine(lines[i]));
+                            }
+                        }
+                        
+                        data = { columns, rows, nrow, ncol, loadedRows: rows.length };
+                    }
+                    
                     fs.unlinkSync(tempFile); // Clean up
                     break;
                 } catch (e) {
@@ -285,6 +311,40 @@ tryCatch({
             // Timeout or failed
             this._panel.webview.html = this._getManualHtml(variableName);
         }
+    }
+
+    // Simple CSV line parser that handles quoted fields
+    private _parseCSVLine(line: string): string[] {
+        const result: string[] = [];
+        let current = '';
+        let inQuotes = false;
+        
+        for (let i = 0; i < line.length; i++) {
+            const char = line[i];
+            const nextChar = line[i + 1];
+            
+            if (inQuotes) {
+                if (char === '"' && nextChar === '"') {
+                    current += '"';
+                    i++; // Skip next quote
+                } else if (char === '"') {
+                    inQuotes = false;
+                } else {
+                    current += char;
+                }
+            } else {
+                if (char === '"') {
+                    inQuotes = true;
+                } else if (char === ',') {
+                    result.push(current);
+                    current = '';
+                } else {
+                    current += char;
+                }
+            }
+        }
+        result.push(current);
+        return result;
     }
 
     private _getLoadingHtml(variableName: string): string {
@@ -449,7 +509,7 @@ function renderTable(data) {
 </body></html>`;
     }
 
-    private _getDataHtml(variableName: string, data: { columns: string[], rows: any[][], nrow: number, ncol: number }): string {
+    private _getDataHtml(variableName: string, data: { columns: string[], rows: string[][], nrow: number, ncol: number }): string {
         return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -584,16 +644,15 @@ function renderTable(data) {
             </tbody>
         </table>
     </div>
-    <div class="status-bar" id="statusBar">Showing ${data.rows.length} of ${data.nrow} rows</div>
+    <div class="status-bar" id="statusBar">${data.nrow.toLocaleString()} rows × ${data.ncol} columns</div>
 
     <script>
-        let originalRows = ${JSON.stringify(data.rows)};
+        const originalRows = ${JSON.stringify(data.rows)};
         const columns = ${JSON.stringify(data.columns)};
         let displayRows = originalRows.map((row, i) => ({ data: row, originalIndex: i }));
         
         // Virtual scrolling configuration
         const ROWS_PER_BATCH = 100; // Render 100 rows at a time
-        let scrollTop = 0;
         let visibleStartIndex = 0;
         let visibleEndIndex = ROWS_PER_BATCH;
         
@@ -637,7 +696,7 @@ function renderTable(data) {
             });
         });
 
-        // Sorting - click on header
+        // Sorting - click on header (with debouncing for large datasets)
         document.querySelectorAll('.header-row th.sortable').forEach(th => {
             th.addEventListener('click', (e) => {
                 if (e.target.classList.contains('resize-handle')) return;
@@ -667,7 +726,15 @@ function renderTable(data) {
                 if (sortStack.length > 3) sortStack.pop();
                 
                 updateSortIndicators();
-                applyFiltersAndSort();
+                
+                // Show loading indicator for large datasets
+                if (originalRows.length > 5000) {
+                    document.getElementById('statusBar').textContent = 'Sorting...';
+                    // Use setTimeout to let UI update before sorting
+                    setTimeout(() => applyFiltersAndSort(), 10);
+                } else {
+                    applyFiltersAndSort();
+                }
             });
         });
 
