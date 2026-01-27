@@ -211,12 +211,13 @@ tryCatch({
     # Convert all columns to character for consistent display
     .tmp_data[] <- lapply(.tmp_data, as.character)
     
-    # Write metadata as first line, then CSV data (data.table::fwrite is ~100x faster than lapply)
+    # Write metadata as first line, column names as second line, then CSV data
     .tmp_meta <- paste0("__META__,", .tmp_nrow, ",", .tmp_ncol)
-    writeLines(.tmp_meta, "${tempFileEscaped}")
-    data.table::fwrite(.tmp_data, "${tempFileEscaped}", append = TRUE, quote = TRUE)
+    .tmp_header <- paste0('"', paste(.tmp_cols, collapse = '","'), '"')
+    writeLines(c(.tmp_meta, .tmp_header), "${tempFileEscaped}")
+    data.table::fwrite(.tmp_data, "${tempFileEscaped}", append = TRUE, quote = TRUE, col.names = FALSE)
     
-    rm(.tmp_data, .tmp_nrow, .tmp_ncol, .tmp_cols, .tmp_meta)
+    rm(.tmp_data, .tmp_nrow, .tmp_ncol, .tmp_cols, .tmp_meta, .tmp_header)
     message("Data exported successfully")
 }, error = function(e) {
     writeLines(paste0('__ERROR__,', gsub(',', ';', e$message)), "${tempFileEscaped}")
