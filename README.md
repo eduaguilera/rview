@@ -2,18 +2,17 @@
 
 A Positron/VS Code extension for R developers with three main features:
 
-1. **Tibble Explorer** — Ctrl+Click on tibble/data.frame names to open them in the Data Explorer
+1. **Tibble Explorer** — Hover on tibble/data.frame names to open them in the Data Explorer or Simple Data Viewer
 2. **Simple Data Viewer** — Lightweight RStudio-style data viewer with column filters
 3. **Code Section Folding** — RStudio-style collapsible code sections using `# Section ----` markers
 
 ## Features
 
-### 1. Tibble Explorer (Ctrl+Click to View Data)
+### 1. Tibble Explorer (Hover to View Data)
 
 Quickly inspect your data frames without leaving your code:
 
-- **Ctrl+Click** on any tibble/data.frame variable to open it in the Data Explorer
-- **Hover** over variables to see a quick action link
+- **Hover** over any tibble/data.frame variable to see a quick action link to open it in the Data Explorer
 - **Smart Detection** — automatically recognizes variables created with common patterns
 - **Pipe Chain Support** — works with tidyverse pipes (`%>%` and `|>`)
 
@@ -25,7 +24,7 @@ my_data <- tibble(
   y = rnorm(10)
 )
 
-# Ctrl+Click on 'my_data' anywhere to view it in Data Explorer
+# Hover on 'my_data' anywhere to view it in Data Explorer
 my_data %>%
   filter(x > 5)
 ```
