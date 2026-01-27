@@ -195,7 +195,8 @@ class SimpleDataViewerPanel {
         const tempFile = path.join(SimpleDataViewerPanel._tempDir, `data_${Date.now()}.json`);
         const tempFileEscaped = tempFile.replace(/\\/g, '/');
 
-        // R code to write data to temp file
+        // R code to write data to temp file (with progressive loading)
+        const tempFileFullEscaped = tempFileEscaped.replace('.json', '_full.json');
         const rCode = `
 tryCatch({
     if (!requireNamespace("jsonlite", quietly = TRUE)) {
@@ -205,17 +206,38 @@ tryCatch({
     .tmp_nrow <- nrow(.tmp_data)
     .tmp_ncol <- ncol(.tmp_data)
     .tmp_cols <- colnames(.tmp_data)
-    .tmp_rows <- lapply(1:nrow(.tmp_data), function(i) {
+    
+    # Export first chunk (first 1000 rows) for immediate display
+    .tmp_preview_rows <- min(1000, .tmp_nrow)
+    .tmp_preview <- lapply(1:.tmp_preview_rows, function(i) {
         as.character(unlist(.tmp_data[i, ]))
     })
-    .tmp_json <- jsonlite::toJSON(list(
+    .tmp_preview_json <- jsonlite::toJSON(list(
         columns = .tmp_cols,
-        rows = .tmp_rows,
+        rows = .tmp_preview,
         nrow = .tmp_nrow,
-        ncol = .tmp_ncol
+        ncol = .tmp_ncol,
+        isPreview = .tmp_nrow > 1000
     ), auto_unbox = TRUE)
-    writeLines(.tmp_json, "${tempFileEscaped}")
-    rm(.tmp_data, .tmp_nrow, .tmp_ncol, .tmp_cols, .tmp_rows, .tmp_json)
+    writeLines(.tmp_preview_json, "${tempFileEscaped}")
+    
+    # If more than 1000 rows, export full data to separate file
+    if (.tmp_nrow > 1000) {
+        .tmp_all_rows <- lapply(1:.tmp_nrow, function(i) {
+            as.character(unlist(.tmp_data[i, ]))
+        })
+        .tmp_full_json <- jsonlite::toJSON(list(
+            columns = .tmp_cols,
+            rows = .tmp_all_rows,
+            nrow = .tmp_nrow,
+            ncol = .tmp_ncol,
+            isPreview = FALSE
+        ), auto_unbox = TRUE)
+        writeLines(.tmp_full_json, "${tempFileFullEscaped}")
+        rm(.tmp_all_rows, .tmp_full_json)
+    }
+    
+    rm(.tmp_data, .tmp_nrow, .tmp_ncol, .tmp_cols, .tmp_preview, .tmp_preview_json, .tmp_preview_rows)
     message("Data exported successfully")
 }, error = function(e) {
     writeLines(paste0('{"error":"', gsub('"', '\\\\"', e$message), '"}'), "${tempFileEscaped}")
@@ -281,9 +303,43 @@ tryCatch({
             this._panel.webview.html = this._getErrorHtml(variableName, data.error);
         } else if (data && data.columns) {
             this._panel.webview.html = this._getDataHtml(variableName, data);
+            
+            // If this is a preview, load full data in background
+            if (data.isPreview) {
+                this._loadFullDataInBackground(tempFile.replace('.json', '_full.json'));
+            }
         } else {
             // Timeout or failed
             this._panel.webview.html = this._getManualHtml(variableName);
+        }
+    }
+
+    private async _loadFullDataInBackground(fullDataFile: string) {
+        // Poll for full data file (give it up to 30 seconds for large datasets)
+        const maxWait = 30000;
+        const pollInterval = 500;
+        let waited = 0;
+
+        while (waited < maxWait) {
+            await new Promise(resolve => setTimeout(resolve, pollInterval));
+            waited += pollInterval;
+
+            if (fs.existsSync(fullDataFile)) {
+                try {
+                    const content = fs.readFileSync(fullDataFile, 'utf-8');
+                    const fullData = JSON.parse(content);
+                    fs.unlinkSync(fullDataFile); // Clean up
+                    
+                    // Send full data to webview
+                    this._panel.webview.postMessage({
+                        command: 'updateFullData',
+                        data: fullData
+                    });
+                    break;
+                } catch (e) {
+                    console.log('Error reading full data file:', e);
+                }
+            }
         }
     }
 
@@ -449,7 +505,7 @@ function renderTable(data) {
 </body></html>`;
     }
 
-    private _getDataHtml(variableName: string, data: { columns: string[], rows: any[][], nrow: number, ncol: number }): string {
+    private _getDataHtml(variableName: string, data: { columns: string[], rows: any[][], nrow: number, ncol: number, isPreview?: boolean }): string {
         return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -584,12 +640,24 @@ function renderTable(data) {
             </tbody>
         </table>
     </div>
-    <div class="status-bar" id="statusBar">Showing ${data.rows.length} of ${data.rows.length} rows</div>
+    <div class="status-bar" id="statusBar">Showing ${data.rows.length} of ${data.nrow} rows${data.isPreview ? ' (loading full data...)' : ''}</div>
 
     <script>
-        const originalRows = ${JSON.stringify(data.rows)};
+        let originalRows = ${JSON.stringify(data.rows)};
         const columns = ${JSON.stringify(data.columns)};
         let displayRows = originalRows.map((row, i) => ({ data: row, originalIndex: i }));
+        let isLoadingFull = ${data.isPreview ? 'true' : 'false'};
+        
+        // Listen for full data updates
+        window.addEventListener('message', event => {
+            const message = event.data;
+            if (message.command === 'updateFullData') {
+                originalRows = message.data.rows;
+                isLoadingFull = false;
+                applyFiltersAndSort();
+                document.getElementById('statusBar').textContent = 'Showing ' + displayRows.length + ' of ' + originalRows.length + ' rows';
+            }
+        });
         let sortStack = []; // Array of { col, dir } for multi-level sorting
         const vscode = acquireVsCodeApi();
 
