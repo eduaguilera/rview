@@ -96,7 +96,7 @@ To enable RStudio-style folding, configure Positron to use this extension as the
 
 1. Open Settings (`Ctrl+,`)
 2. Search for `folding strategy`
-3. Set **Editor: Folding Strategy** to `auto`
+3. Set **Rview** as the `Default Folding Range Provider`
 
 Or add this to your `settings.json`:
 ```json
