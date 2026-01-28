@@ -147,6 +147,39 @@ data <- data %>%
 - **Positron IDE** (recommended) or VS Code with R extension
 - R language support enabled
 
+## Installation
+
+### From GitHub (Manual Install)
+
+1. **Download or clone the repository**
+   ```bash
+   git clone https://github.com/eduaguilera/rview.git
+   cd rview
+   ```
+
+2. **Install dependencies and compile**
+   ```bash
+   npm install
+   npm run compile
+   ```
+
+3. **Package the extension**
+   ```bash
+   npm install -g @vscode/vsce
+   vsce package
+   ```
+   This creates a `rview-1.0.0.vsix` file.
+
+4. **Install in VS Code/Positron**
+   - Open VS Code or Positron
+   - Press `Ctrl+Shift+P` and type **"Install from VSIX"**
+   - Select the `rview-1.0.0.vsix` file
+   - Reload the window when prompted
+
+### From VS Code Marketplace
+
+*Coming soon*
+
 ## Commands
 
 | Command | Shortcut | Description |
